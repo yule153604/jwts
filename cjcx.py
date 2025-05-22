@@ -19,7 +19,7 @@ class GradeSystem:
             "Referer": f"{self.base_url}/"
         }
         # 推送接口配置
-        self.push_token = os.getenv('PUSH_TOKEN', 'cbc61b6a6fbc44349d11f40a2335522c') # Replace with your token or use env var
+        self.push_token = os.getenv('PUSH_TOKEN') # Replace with your token or use env var
         self.push_url = "https://www.pushplus.plus/send"
         # 文件用于存储上一次查询的成绩
         self.previous_grades_file = "previous_grades_data.json"
