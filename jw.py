@@ -22,7 +22,7 @@ class JWSystem:
         # 设置第一周周一日期
         self.first_week_monday = datetime(2025, 3, 3)
         # 推送接口配置
-        self.push_token = os.getenv('PUSH_TOKEN', 'cbc61b6a6fbc44349d11f40a2335522c')
+        self.push_token = os.getenv('PUSH_TOKEN')
         self.push_url = "https://www.pushplus.plus/send"
 
     def get_current_week(self):
