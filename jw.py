@@ -324,13 +324,26 @@ class JWSystem:
             }
             
             # 发送推送请求
-            response = requests.get(self.push_url, params=params)
-            result = response.json()
+            # response = requests.get(self.push_url, params=params) # 原来的GET请求
+            response = requests.post(self.push_url, data=params) # 修改为POST请求
+            print(f"PushPlus API Status Code: {response.status_code}") 
+            print(f"PushPlus API Response Text: {response.text}") 
             
-            if result.get("code") == 200:
-                print("课表推送成功！")
-            else:
-                print(f"课表推送失败：{result.get('msg')}")
+            # 检查响应文本是否为空
+            if not response.text:
+                print("课表推送失败：PushPlus API 返回了空响应。")
+                return
+
+            try:
+                result = response.json()
+                if result.get("code") == 200:
+                    print("课表推送成功！")
+                else:
+                    print(f"课表推送失败：{result.get('msg')}")
+            except requests.exceptions.JSONDecodeError as e:
+                print(f"课表推送失败：无法解析 PushPlus API 的响应为 JSON。错误信息: {e}")
+                print(f"原始响应状态码: {response.status_code}")
+                print(f"原始响应文本: {response.text}")
                 
         except Exception as e:
             print(f"推送课表时发生错误: {str(e)}")
@@ -338,8 +351,8 @@ class JWSystem:
 def main():
     try:
         # 从环境变量获取账号密码
-        username = os.getenv('JW_USERNAME')
-        password = os.getenv('JW_PASSWORD')
+        username = os.getenv('JW_USERNAME','')
+        password = os.getenv('JW_PASSWORD','')
         
         jw = JWSystem()
         if jw.login(username, password):
