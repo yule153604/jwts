@@ -58,31 +58,61 @@ class JWSystem:
                 'course_code': ''
             }
             
-            # 处理第一行（课程名称）
+            # 处理第一行（课程名称、周次、教室、课程号等混合信息）
             if info_parts[0]:
                 full_text = info_parts[0].strip()
                 
-                # 提取课程号（格式：6位数字+1位字母+3位数字+连字符+2位数字）
+                # 1. 提取课程号
                 course_code_match = re.search(r'\d{6}[A-Z]\d{3}-\d{2}', full_text)
                 if course_code_match:
                     course_info['course_code'] = course_code_match.group()
-                    full_text = full_text.replace(course_info['course_code'], '').strip()
+                    full_text = full_text.replace(course_info['course_code'], '', 1).strip()
                 
-                # 提取教室信息（格式：字母+数字+楼+其他信息+实验室/教室）
-                classroom_match = re.search(r'[A-Z]\d+楼.*?(?:实验室|教室|\d+)', full_text)
-                if classroom_match:
-                    course_info['classroom'] = classroom_match.group()
-                    full_text = full_text.replace(course_info['classroom'], '').strip()
-                
-                # 提取周次信息（格式：数字-数字(周)）
+                # 2. 提取周次信息
                 weeks_match = re.search(r'\d+-\d+\(周\)', full_text)
                 if weeks_match:
                     course_info['weeks'] = weeks_match.group()
-                    full_text = full_text.replace(course_info['weeks'], '').strip()
+                    full_text = full_text.replace(course_info['weeks'], '', 1).strip()
                 
-                # 剩余文本作为课程名称
-                course_info['name'] = full_text.strip()
-            
+                # 3. 处理剩余的 full_text 来分离课程名称和教室
+                potential_classroom_keywords = ["机房", "实验室", "教室"]
+                
+                building_marker_match = re.search(r'[A-Z]\d+楼', full_text)
+                
+                if building_marker_match:
+                    # 情况1：找到了楼号标记 (例如 "C4楼")
+                    name_candidate = full_text[:building_marker_match.start()].strip()
+                    classroom_candidate = full_text[building_marker_match.start():].strip()
+
+                    # 检查 name_candidate 是否以关键字结尾，如果是，则移到 classroom_candidate
+                    for keyword in potential_classroom_keywords:
+                        if name_candidate.endswith(keyword):
+                            name_candidate = name_candidate[:-len(keyword)].strip()
+                            classroom_candidate = keyword + " " + classroom_candidate # 将关键字前置到教室信息
+                            break 
+                    
+                    course_info['name'] = name_candidate
+                    course_info['classroom'] = classroom_candidate
+                else:
+                    # 情况2：没有找到楼号标记
+                    # 尝试基于关键字从 full_text 末尾提取教室信息
+                    name_part = full_text
+                    classroom_part = ""
+                    for keyword in potential_classroom_keywords:
+                        if name_part.endswith(keyword):
+                            # 如果 full_text 以关键字结尾 (例如 "课程名称 机房" 或 "课程机房" 或 "机房")
+                            # 将关键字视为教室，其余部分为名称
+                            classroom_part = keyword
+                            name_part = name_part[:-len(keyword)].strip()
+                            break
+                    course_info['name'] = name_part
+                    course_info['classroom'] = classroom_part
+                
+                # 如果名称和教室都未解析出来，但 full_text 仍有内容 (在移除代码和周次后)
+                # 意味着之前的逻辑未能分离名称和教室，此时将剩余 full_text 赋给名称
+                if not course_info['name'] and not course_info['classroom'] and full_text:
+                    course_info['name'] = full_text
+
             return course_info
             
         except Exception as e:
@@ -255,15 +285,23 @@ class JWSystem:
         """推送课表到微信"""
         try:
             # 获取当前日期和星期
-            today = datetime.now()
-            weekday = today.weekday() + 1  # 转换为1-7的星期格式
-            date_str = today.strftime("%Y-%m-%d")
+            now = datetime.now()
+            # 判断是否在20点之前
+            is_before_8pm = now.hour < 20
+            
+            # 确定目标日期
+            target_date = now
+            if not is_before_8pm:
+                target_date = now + timedelta(days=1)
+            
+            weekday = target_date.weekday() + 1  # 转换为1-7的星期格式
+            date_str = target_date.strftime("%Y-%m-%d")
             
             # 构建推送内容
             content = f"""
             <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
                 <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                    <h2 style="color: #2c3e50; margin: 0; text-align: center;">{'第' + str(schedule['current_week']) + '周课表' if weekday == 1 else '今日课表'}</h2>
+                    <h2 style="color: #2c3e50; margin: 0; text-align: center;">{date_str} 课表</h2>
                 </div>
                 <table style="width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 2px 3px rgba(0,0,0,0.1);">
                     <thead>
@@ -278,18 +316,35 @@ class JWSystem:
                     <tbody>
             """
             
-            # 根据星期几筛选课程
-            filtered_schedule = schedule['schedule']
-            if weekday != 1:  # 如果不是周一，只显示当天的课程
-                filtered_schedule = [course for course in schedule['schedule'] if course['day'] == weekday]
-                if not filtered_schedule:
-                    content += f"""
-                        <tr>
-                            <td colspan="5" style="padding: 15px; text-align: center; border: 1px solid #ddd; background-color: #f8f9fa;">
-                                <span style="color: #666; font-style: italic;">今天没有课程安排</span>
-                            </td>
-                        </tr>
-                    """
+            # 筛选目标日期的课程
+            filtered_schedule = [course for course in schedule['schedule'] if course['day'] == weekday]
+            
+            # 打印课表到控制台
+            print(f"\n--- {date_str} 课表 ({'今天' if target_date.date() == now.date() else '明天'}) --- ")
+            if not filtered_schedule:
+                print(f"{date_str} 没有课程安排")
+            else:
+                for course in filtered_schedule:
+                    course_info = course['course']
+                    print(f"时间：{self.convert_time(course['time'])}, 星期{course['day']}")
+                    print(f"课程名称：{course_info['name']}")
+                    if course_info['weeks']:
+                        print(f"上课周次：{course_info['weeks']}")
+                    if course_info['classroom']:
+                        print(f"上课教室：{course_info['classroom']}")
+                    if course_info['course_code']:
+                        print(f"课程编号：{course_info['course_code']}")
+                    print("-" * 30)
+            print("--- 课表结束 ---\n")
+            
+            if not filtered_schedule:
+                content += f"""
+                    <tr>
+                        <td colspan="5" style="padding: 15px; text-align: center; border: 1px solid #ddd; background-color: #f8f9fa;">
+                            <span style="color: #666; font-style: italic;">{date_str} 没有课程安排</span>
+                        </td>
+                    </tr>
+                """
             
             for i, course in enumerate(filtered_schedule):
                 course_info = course['course']
@@ -315,7 +370,7 @@ class JWSystem:
             """
             
             # 构建推送参数
-            title = "📚 本周课表" if weekday == 1 else f"📚 今日课表 - {date_str}"
+            title = f"📚 {date_str} 课表"
             params = {
                 "token": self.push_token,
                 "title": title,
@@ -324,8 +379,7 @@ class JWSystem:
             }
             
             # 发送推送请求
-            # response = requests.get(self.push_url, params=params) # 原来的GET请求
-            response = requests.post(self.push_url, data=params) # 修改为POST请求
+            response = requests.post(self.push_url, data=params)
             print(f"PushPlus API Status Code: {response.status_code}") 
             print(f"PushPlus API Response Text: {response.text}") 
             
@@ -359,41 +413,6 @@ def main():
             # 获取课表信息
             schedule = jw.get_schedule()
             if schedule:
-                # 获取当前星期
-                weekday = datetime.now().weekday() + 1
-                
-                print(f"\n当前是第{schedule['current_week']}周")
-                if weekday == 1:
-                    print("\n本周课表：")
-                    for course in schedule['schedule']:
-                        course_info = course['course']
-                        print(f"时间：{jw.convert_time(course['time'])}, 星期{course['day']}")
-                        print(f"课程名称：{course_info['name']}")
-                        if course_info['weeks']:
-                            print(f"上课周次：{course_info['weeks']}")
-                        if course_info['classroom']:
-                            print(f"上课教室：{course_info['classroom']}")
-                        if course_info['course_code']:
-                            print(f"课程编号：{course_info['course_code']}")
-                        print("-" * 50)
-                else:
-                    print(f"\n今日课表（星期{weekday}）：")
-                    today_courses = [course for course in schedule['schedule'] if course['day'] == weekday]
-                    if today_courses:
-                        for course in today_courses:
-                            course_info = course['course']
-                            print(f"时间：{jw.convert_time(course['time'])}, 星期{course['day']}")
-                            print(f"课程名称：{course_info['name']}")
-                            if course_info['weeks']:
-                                print(f"上课周次：{course_info['weeks']}")
-                            if course_info['classroom']:
-                                print(f"上课教室：{course_info['classroom']}")
-                            if course_info['course_code']:
-                                print(f"课程编号：{course_info['course_code']}")
-                            print("-" * 50)
-                    else:
-                        print("今天没有课程安排")
-                
                 # 推送课表到微信
                 jw.push_schedule(schedule)
     except Exception as e:
